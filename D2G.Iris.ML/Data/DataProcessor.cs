@@ -11,23 +11,31 @@ using D2G.Iris.ML.Core.Interfaces;
 
 namespace D2G.Iris.ML.Data
 {
-    public class DataProcessor
+    public class DataProcessor : IDataProcessor
     {
         private readonly DataBalancerFactory _dataBalancerFactory;
         private readonly FeatureSelectorFactory _featureSelectorFactory;
+        private readonly ISqlHandler _sqlHandler;
 
         public DataProcessor()
         {
             _dataBalancerFactory = new DataBalancerFactory();
             _featureSelectorFactory = new FeatureSelectorFactory(new MLContext());
+            _sqlHandler = null; 
+        }
+
+        public DataProcessor(ISqlHandler sqlHandler)
+        {
+            _dataBalancerFactory = new DataBalancerFactory();
+            _featureSelectorFactory = new FeatureSelectorFactory(new MLContext());
+            _sqlHandler = sqlHandler;
         }
 
         public async Task<ProcessedData> ProcessData(
             MLContext mlContext,
             IDataView rawData,
             string[] enabledFields,
-            ModelConfig config,
-            ISqlHandler sqlHandler)
+            ModelConfig config)
         {
             Console.WriteLine("\n=============== Processing Data ===============");
 
@@ -70,7 +78,6 @@ namespace D2G.Iris.ML.Data
 
                     if (config.FeatureEngineering.Method != FeatureSelectionMethod.None)
                     {
-                        Console.WriteLine("Applying feature selection after balancing...");
                         var featureResult = await ProcessFeatureSelection(mlContext, processedData, currentFeatures, config);
                         processedData = featureResult.transformedData;
                         currentFeatures = featureResult.selectedFeatures;
@@ -103,11 +110,11 @@ namespace D2G.Iris.ML.Data
                     processedData = labelPipeline.Fit(processedData).Transform(processedData);
                 }
 
-                if (!string.IsNullOrEmpty(config.Database.OutputTableName))
+                if (_sqlHandler != null && !string.IsNullOrEmpty(config.Database.OutputTableName))
                 {
                     try
                     {
-                        sqlHandler.SaveToSql(
+                        _sqlHandler.SaveToSql(
                             config.Database.OutputTableName,
                             processedData,
                             currentFeatures,

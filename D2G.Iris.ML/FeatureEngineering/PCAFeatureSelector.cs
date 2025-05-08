@@ -16,26 +16,6 @@ namespace D2G.Iris.ML.FeatureEngineering
         {
         }
 
-        private class FeatureVector
-        {
-            [VectorType]
-            public float[] Features { get; set; }
-            public long Label { get; set; }
-        }
-
-        private class PcaInputRow
-        {
-            public long Label { get; set; }
-            public float[] FeaturesArray { get; set; }
-        }
-
-        private class PcaOutputRow
-        {
-            [VectorType]
-            public float[] Features { get; set; }
-            public long Label { get; set; }
-        }
-
         public override async Task<(IDataView transformedData, string[] selectedFeatures, string report)> SelectFeatures(
             MLContext mlContext,
             IDataView data,
@@ -45,79 +25,168 @@ namespace D2G.Iris.ML.FeatureEngineering
             FeatureEngineeringConfig config)
         {
             InitializeReport("PCA");
-
             try
             {
                 ValidatePcaConfiguration(config, candidateFeatures.Length);
-                int numberOfComponents = config.NumberOfComponents;
+                int k = config.NumberOfComponents;
+                _report.AppendLine($"Applying PCA ({modelType}) with {k} components");
 
-                _report.AppendLine($"Applying PCA with {numberOfComponents} components");
-                _report.AppendLine($"Original feature count: {candidateFeatures.Length}");
-
-                Console.WriteLine("Extracting data for PCA processing");
-                var rows = mlContext.Data.CreateEnumerable<FeatureVector>(
-                    data, reuseRowObject: false).ToList();
-
-                if (rows.Count == 0 || rows[0].Features == null)
+                if (modelType == ModelType.Regression)
                 {
-                    throw new InvalidOperationException("No valid feature data found");
+                    data = mlContext.Transforms
+                            .Conversion.ConvertType(
+                                outputColumnName: targetField,
+                                inputColumnName: targetField,
+                                outputKind: DataKind.Single)
+                            .Fit(data)
+                            .Transform(data);
+
+                    var schemaFV = SchemaDefinition.Create(typeof(FeatureVectorFloat));
+                    schemaFV[nameof(FeatureVectorFloat.Label)].ColumnName = targetField;
+
+                    var rowsF = mlContext.Data.CreateEnumerable<FeatureVectorFloat>(
+                        data,
+                        reuseRowObject: false,
+                        schemaDefinition: schemaFV)
+                        .ToList();
+
+                    if (rowsF.Count == 0 || rowsF[0].Features == null)
+                        throw new InvalidOperationException("No valid feature data found");
+
+                    int dim = rowsF[0].Features.Length;
+                    var inputListF = rowsF
+                        .Select(r => new PcaInputRowFloat { Label = r.Label, FeaturesArray = r.Features })
+                        .ToList();
+
+                    var schemaInF = SchemaDefinition.Create(typeof(PcaInputRowFloat));
+                    schemaInF["FeaturesArray"].ColumnType =
+                        new VectorDataViewType(NumberDataViewType.Single, dim);
+
+                    var inputDataF = mlContext.Data.LoadFromEnumerable(inputListF, schemaInF);
+
+                    var pipelineF = mlContext.Transforms
+                        .NormalizeMinMax("NormalizedFeatures", "FeaturesArray")
+                        .Append(mlContext.Transforms.ProjectToPrincipalComponents(
+                            outputColumnName: "Features",
+                            inputColumnName: "NormalizedFeatures",
+                            rank: k));
+
+                    var modelF = await Task.Run(() => pipelineF.Fit(inputDataF));
+                    var transformedF = modelF.Transform(inputDataF);
+
+                    var schemaOutF = SchemaDefinition.Create(typeof(PcaOutputRowFloat));
+                    schemaOutF[nameof(PcaOutputRowFloat.Label)].ColumnName = "Label";
+
+                    var resultF = mlContext.Data.CreateEnumerable<PcaOutputRowFloat>(
+                        transformedF,
+                        reuseRowObject: false,
+                        schemaDefinition: schemaOutF)
+                        .ToList();
+
+                    var outputDataF = mlContext.Data.LoadFromEnumerable(resultF);
+
+                    var pcaNamesF = Enumerable.Range(1, k)
+                        .Select(i => $"PCA_Component_{i}")
+                        .ToArray();
+
+                    AddFeatureSelectionSummary(candidateFeatures.Length, k, pcaNamesF);
+                    return (outputDataF, pcaNamesF, _report.ToString());
                 }
-
-                int featureCount = rows[0].Features.Length;
-                Console.WriteLine($"Feature vector dimension: {featureCount}");
-
-                var pcaInputRows = rows.Select(r => new PcaInputRow
+                else
                 {
-                    Label = r.Label,
-                    FeaturesArray = r.Features
-                }).ToList();
+                    var schemaFV = SchemaDefinition.Create(typeof(FeatureVectorLong));
+                    schemaFV[nameof(FeatureVectorLong.Label)].ColumnName = targetField;
 
-                var schema = SchemaDefinition.Create(typeof(PcaInputRow));
-                schema["FeaturesArray"].ColumnType = new VectorDataViewType(NumberDataViewType.Single, featureCount);
+                    var rowsL = mlContext.Data.CreateEnumerable<FeatureVectorLong>(
+                        data,
+                        reuseRowObject: false,
+                        schemaDefinition: schemaFV)
+                        .ToList();
 
-                var inputData = mlContext.Data.LoadFromEnumerable(pcaInputRows, schema);
+                    if (rowsL.Count == 0 || rowsL[0].Features == null)
+                        throw new InvalidOperationException("No valid feature data found");
 
-                var pcaPipeline = mlContext.Transforms.NormalizeMinMax("NormalizedFeatures", "FeaturesArray")
-                    .Append(mlContext.Transforms.ProjectToPrincipalComponents(
-                        outputColumnName: "Features",
-                        inputColumnName: "NormalizedFeatures",
-                        rank: numberOfComponents));
+                    int dim = rowsL[0].Features.Length;
+                    var inputListL = rowsL
+                        .Select(r => new PcaInputRowLong { Label = r.Label, FeaturesArray = r.Features })
+                        .ToList();
 
+                    var schemaInL = SchemaDefinition.Create(typeof(PcaInputRowLong));
+                    schemaInL["FeaturesArray"].ColumnType =
+                        new VectorDataViewType(NumberDataViewType.Single, dim);
 
-                Console.WriteLine("Applying ML.NET PCA transform");
-                var pcaModel = await Task.Run(() => pcaPipeline.Fit(inputData));
-                var pcaData = pcaModel.Transform(inputData);
+                    var inputDataL = mlContext.Data.LoadFromEnumerable(inputListL, schemaInL);
 
-                var resultRows = mlContext.Data.CreateEnumerable<PcaOutputRow>(
-                    pcaData, reuseRowObject: false).ToList();
+                    var pipelineL = mlContext.Transforms
+                        .NormalizeMinMax("NormalizedFeatures", "FeaturesArray")
+                        .Append(mlContext.Transforms.ProjectToPrincipalComponents(
+                            outputColumnName: "Features",
+                            inputColumnName: "NormalizedFeatures",
+                            rank: k));
 
-                var outputData = mlContext.Data.LoadFromEnumerable(resultRows);
+                    var modelL = await Task.Run(() => pipelineL.Fit(inputDataL));
+                    var transformedL = modelL.Transform(inputDataL);
 
-                string[] pcaFeatureNames = Enumerable.Range(1, numberOfComponents)
-                    .Select(i => $"PCA_Component_{i}")
-                    .ToArray();
+                    var schemaOutL = SchemaDefinition.Create(typeof(PcaOutputRowLong));
+                    schemaOutL[nameof(PcaOutputRowLong.Label)].ColumnName = "Label";
 
-                _report.AppendLine("\nPCA transformation completed successfully using ML.NET.");
-                _report.AppendLine("\nPCA Components:");
-                foreach (var name in pcaFeatureNames)
-                {
-                    _report.AppendLine($"  - {name}");
+                    var resultL = mlContext.Data.CreateEnumerable<PcaOutputRowLong>(
+                        transformedL,
+                        reuseRowObject: false,
+                        schemaDefinition: schemaOutL)
+                        .ToList();
+
+                    var outputDataL = mlContext.Data.LoadFromEnumerable(resultL);
+
+                    var pcaNamesL = Enumerable.Range(1, k)
+                        .Select(i => $"PCA_Component_{i}")
+                        .ToArray();
+
+                    AddFeatureSelectionSummary(candidateFeatures.Length, k, pcaNamesL);
+                    return (outputDataL, pcaNamesL, _report.ToString());
                 }
-
-                AddFeatureSelectionSummary(
-                    candidateFeatures.Length,
-                    pcaFeatureNames.Length,
-                    pcaFeatureNames);
-
-                return (outputData, pcaFeatureNames, _report.ToString());
             }
             catch (Exception ex)
             {
                 AddErrorToReport(ex);
                 Console.WriteLine($"PCA Feature Selection Error: {ex.Message}");
-                Console.WriteLine($"Stack Trace: {ex.StackTrace}");
                 throw;
             }
+        }
+        private class FeatureVectorLong
+        {
+            [VectorType]
+            public float[] Features { get; set; }
+            public long Label { get; set; }
+        }
+        private class PcaInputRowLong
+        {
+            public long Label { get; set; }
+            public float[] FeaturesArray { get; set; }
+        }
+        private class PcaOutputRowLong
+        {
+            [VectorType]
+            public float[] Features { get; set; }
+            public long Label { get; set; }
+        }
+
+        private class FeatureVectorFloat
+        {
+            [VectorType]
+            public float[] Features { get; set; }
+            public float Label { get; set; }
+        }
+        private class PcaInputRowFloat
+        {
+            public float Label { get; set; }
+            public float[] FeaturesArray { get; set; }
+        }
+        private class PcaOutputRowFloat
+        {
+            [VectorType]
+            public float[] Features { get; set; }
+            public float Label { get; set; }
         }
 
         private void ValidatePcaConfiguration(FeatureEngineeringConfig config, int maxComponents)

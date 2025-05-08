@@ -92,8 +92,6 @@ namespace D2G.Iris.ML.FeatureEngineering
                 if (featureValuesList.Count > 0 && featureValuesList[0].Length > 0)
                 {
                     int featureCount = featureValuesList[0].Length;
-                    Console.WriteLine($"Feature vector dimension: {featureCount}");
-
                     effectiveFeatureNames = Enumerable.Range(0, featureCount)
                         .Select(i => candidateFeatures.Length > i ?
                                candidateFeatures[i] : $"Feature_{i}")

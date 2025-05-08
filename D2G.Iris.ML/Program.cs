@@ -45,13 +45,12 @@ namespace D2G.Iris.ML
 
                 var mlContext = new MLContext(seed: 42);
 
-                var dataProcessor = new DataProcessor();
+                var dataProcessor = new DataProcessor(sqlHandler);
                 var processedData = await dataProcessor.ProcessData(
                     mlContext,
                     rawData,
                     enabledFields,
-                    config,
-                    sqlHandler);
+                    config);
 
                 var modelTrainerFactory = new ModelTrainerFactory(mlContext);
                 var modelTrainer = modelTrainerFactory.CreateTrainer(config.ModelType);
