@@ -2,20 +2,20 @@
   "modelConfig": {
     "author": "Nobin Devasia",
     "description": "Model for Agenitor 408",
-    "modelType": "MultiClassClassification",
-    "targetField": "Label",
+    "modelType": "regression",
+    "targetField": "ActivePower",
 
     "database": {
       "server": "sim-01-02",
       "database": "sql-iris-dev",
       "whereClause": "",
       "tableName": "ComputeData.MessageProb256_Ag408_dummy",
-      "outputTableName": ""
+      "outputTableName": "ComputeData.MessageProb256_Ag408_dummy_pr"
     },
 
     "dataBalancing": {
-      "method": "smote",
-      "executionOrder": 2,
+      "method": "none",
+      "executionOrder": 1,
       "kNeighbors": 1,
       "undersamplingRatio": 0.9,
       "minorityToMajorityRatio": 0.1

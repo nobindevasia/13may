@@ -17,13 +17,6 @@ namespace D2G.Iris.ML.Data
         private readonly FeatureSelectorFactory _featureSelectorFactory;
         private readonly ISqlHandler _sqlHandler;
 
-        public DataProcessor()
-        {
-            _dataBalancerFactory = new DataBalancerFactory();
-            _featureSelectorFactory = new FeatureSelectorFactory(new MLContext());
-            _sqlHandler = null; 
-        }
-
         public DataProcessor(ISqlHandler sqlHandler)
         {
             _dataBalancerFactory = new DataBalancerFactory();
