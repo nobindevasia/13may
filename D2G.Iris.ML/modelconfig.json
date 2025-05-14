@@ -1,35 +1,42 @@
 {
   "modelConfig": {
     "author": "Nobin Devasia",
-    "description": "Model for Agenitor 408",
+    "description": "Model for Agenitor 408 with AutoML",
     "modelType": "regression",
-    "targetField": "ActivePower",
+    "targetField": "PositionGasMixer",
 
     "database": {
       "server": "sim-01-02",
       "database": "sql-iris-dev",
       "whereClause": "",
       "tableName": "ComputeData.MessageProb256_Ag408_dummy",
-      "outputTableName": "ComputeData.MessageProb256_Ag408_dummy_pr"
+      "outputTableName": ""
     },
 
     "dataBalancing": {
       "method": "none",
       "executionOrder": 1,
-      "kNeighbors": 1,
+      "kNeighbors": 5,
       "undersamplingRatio": 0.9,
       "minorityToMajorityRatio": 0.1
     },
 
     "featureEngineering": {
-      "method": "pca",
-      "executionOrder": 1,
-      "numberOfComponents": 2,
-      "maxFeatures": 2,
+      "method": "none",
+      "executionOrder": 2,
+      "numberOfComponents": 3,
+      "maxFeatures": 8,
       "multicollinearityThreshold": 0.7
     },
 
-    "trainingParameters": { 
+    "autoML": {
+      "enabled": true,
+      "maxExperimentTimeInSeconds": 40,
+      "optimizingMetric": "Accuracy",
+      "cacheDirectoryCleanupEnabled": true
+    },
+
+    "trainingParameters": {
       "algorithm": "fasttree",
       "algorithmParameters": {
         "NumberOfLeaves": 10
@@ -63,10 +70,6 @@
       },
       {
         "name": "TemperatureRoom",
-        "isEnabled": true
-      },
-      {
-        "name": "ActivePower",
         "isEnabled": true
       },
       {
