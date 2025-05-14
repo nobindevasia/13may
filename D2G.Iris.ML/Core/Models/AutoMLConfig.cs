@@ -9,7 +9,5 @@ namespace D2G.Iris.ML.Core.Models
         public int MaxExperimentTimeInSeconds { get; set; }
         public int MaxModels { get; set; }
         public string OptimizingMetric { get; set; }
-        public Dictionary<string, bool> AllowedTrainers { get; set; }
-        public bool CacheDirectoryCleanupEnabled { get; set; }
     }
 }

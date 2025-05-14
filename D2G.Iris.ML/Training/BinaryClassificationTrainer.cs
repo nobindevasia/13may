@@ -28,36 +28,22 @@ namespace D2G.Iris.ML.Training
             ModelConfig config,
             ProcessedData processedData)
         {
-            Console.WriteLine($"\nStarting binary classification using {(config.AutoML?.Enabled == true ? "AutoML" : config.TrainingParameters.Algorithm)}...");
-
-            // Verify that target field exists in the data
-            if (!dataView.Schema.GetColumnOrNull(config.TargetField).HasValue)
-            {
-                throw new InvalidOperationException($"Target column '{config.TargetField}' not found in dataset. Available columns: {string.Join(", ", dataView.Schema.Select(c => c.Name))}");
-            }
-
+            Console.WriteLine($"\nStarting binary classification using {(config.AutoML?.Enabled == true ? "AutoML" : config.TrainingParameters.Algorithm)}");
             try
             {
-                // 1. Label setup
                 var labelPipeline = mlContext.Transforms.CopyColumns(
                         outputColumnName: "RawLabel", inputColumnName: config.TargetField)
                     .Append(mlContext.Transforms.Conversion.ConvertType(
                         outputColumnName: "Label", inputColumnName: "RawLabel", outputKind: DataKind.Boolean));
                 var labeledData = labelPipeline.Fit(dataView).Transform(dataView);
 
-                // 2. Feature setup
                 IDataView fixedData = PrepareData(labeledData, featureNames);
 
-                // Log dataset statistics for diagnostics
-                Console.WriteLine($"Rows in dataset: {fixedData.GetRowCount()}");
-
-                // 3. AutoML branch
                 if (config.AutoML?.Enabled == true)
                 {
                     return await TrainWithAdvancedAutoML(mlContext, fixedData, featureNames, config, processedData);
                 }
 
-                // 4. Manual pipeline branch
                 return await TrainWithTraditionalApproach(mlContext, fixedData, featureNames, config, processedData);
             }
             catch (Exception ex)
@@ -73,7 +59,6 @@ namespace D2G.Iris.ML.Training
 
         private string GetCleanTrainerName(string fullTrainerName)
         {
-            // Extract just the algorithm name from the pipeline string
             if (fullTrainerName.Contains("=>"))
             {
                 var parts = fullTrainerName.Split("=>");
@@ -94,48 +79,27 @@ namespace D2G.Iris.ML.Training
 
             try
             {
-                // Create cache directory if needed
                 string cacheDir = "AutoMLCache";
                 if (!Directory.Exists(cacheDir))
                     Directory.CreateDirectory(cacheDir);
 
-                // Map string metric to BinaryClassificationMetric enum
                 if (!Enum.TryParse(config.AutoML.OptimizingMetric, out BinaryClassificationMetric metric))
                 {
                     Console.WriteLine($"Warning: Unknown OptimizingMetric '{config.AutoML.OptimizingMetric}', defaulting to {nameof(BinaryClassificationMetric.Accuracy)}");
                     metric = BinaryClassificationMetric.Accuracy;
                 }
 
-                // Set up experiment settings
                 var experimentSettings = new BinaryExperimentSettings
                 {
                     MaxExperimentTimeInSeconds = (uint)config.AutoML.MaxExperimentTimeInSeconds,
                     OptimizingMetric = metric
                 };
 
-                // Optionally set MaxModels via reflection if provided
-                try
-                {
-                    if (config.AutoML.MaxModels > 0)
-                    {
-                        var prop = experimentSettings.GetType().GetProperty("MaxModels");
-                        prop?.SetValue(experimentSettings, (uint)config.AutoML.MaxModels);
-                        Console.WriteLine($"Set MaxModels to {config.AutoML.MaxModels}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Note: Could not set MaxModels: {ex.Message}");
-                }
-
-                // Create and run experiment using settings
-                // Try this if the API only accepts a uint
                 var experiment = mlContext.Auto()
                     .CreateBinaryClassificationExperiment(experimentSettings.MaxExperimentTimeInSeconds);
 
                 var experimentStartTime = DateTime.Now;
 
-                // Execute experiment
                 var experimentResult = experiment.Execute(
                     trainData: preparedData,
                     labelColumnName: "Label");
@@ -143,11 +107,9 @@ namespace D2G.Iris.ML.Training
                 var experimentDuration = DateTime.Now - experimentStartTime;
                 Console.WriteLine($"AutoML experiment completed in {experimentDuration.TotalMinutes:F1} minutes");
 
-                // Enhanced results analysis
                 Console.WriteLine("\n=== AutoML Experiment Summary ===");
                 Console.WriteLine($"Models evaluated: {experimentResult.RunDetails.Count()}");
 
-                // Show top 5 models tried, sorted by the optimizing metric
                 Console.WriteLine("\nTop 5 models evaluated (ranked by {0}):", metric);
                 Console.WriteLine("Rank | Model Type                | AUC      | Accuracy | F1 Score | Runtime");
                 Console.WriteLine("-----|---------------------------|----------|----------|----------|--------");
@@ -162,17 +124,14 @@ namespace D2G.Iris.ML.Training
                     rank++;
                 }
 
-                // Get details about the best model
                 var bestRun = experimentResult.BestRun;
                 var cleanTrainerName = GetCleanTrainerName(bestRun.TrainerName);
                 Console.WriteLine($"\nBest model: {cleanTrainerName}");
                 Console.WriteLine($"Training time: {bestRun.RuntimeInSeconds:F1} seconds");
 
-                // Show the best model's value for the optimizing metric
                 double bestMetricValue = GetMetricValue(bestRun.ValidationMetrics, metric);
                 Console.WriteLine($"Best {metric} value: {bestMetricValue:F4}");
 
-                // Detailed metrics for the best model
                 var metrics = bestRun.ValidationMetrics;
                 Console.WriteLine("\nBest model validation metrics:");
                 Console.WriteLine($"  AUC:                      {metrics.AreaUnderRocCurve:F4}");
@@ -184,7 +143,6 @@ namespace D2G.Iris.ML.Training
                 Console.WriteLine($"  Negative Recall:          {metrics.NegativeRecall:F4}");
                 Console.WriteLine($"  Area Under PRC:           {metrics.AreaUnderPrecisionRecallCurve:F4}");
 
-                // Save model info
                 await SaveModelInfo(
                     metrics,
                     preparedData,
@@ -192,7 +150,6 @@ namespace D2G.Iris.ML.Training
                     config,
                     processedData);
 
-                // Save the model with sanitized filename
                 var sanitizedTrainerName = cleanTrainerName.Replace(">=>", "_").Replace(">", "")
                     .Replace("<", "").Replace(":", "").Replace("/", "").Replace("\\", "")
                     .Replace("*", "").Replace("?", "").Replace("\"", "").Replace("|", "");
@@ -215,7 +172,6 @@ namespace D2G.Iris.ML.Training
             }
         }
 
-        // Order the runs by the selected metric
         private IEnumerable<RunDetail<BinaryClassificationMetrics>> OrderRunsByMetric(
             IEnumerable<RunDetail<BinaryClassificationMetrics>> runs,
             BinaryClassificationMetric metric)
@@ -243,7 +199,6 @@ namespace D2G.Iris.ML.Training
             }
         }
 
-        // Get the value of a specific metric from BinaryClassificationMetrics
         private double GetMetricValue(BinaryClassificationMetrics metrics, BinaryClassificationMetric metric)
         {
             switch (metric)
