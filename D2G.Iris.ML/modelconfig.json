@@ -3,7 +3,7 @@
     "author": "Nobin Devasia",
     "description": "Model for Agenitor 408 with AutoML",
     "modelType": "regression",
-    "targetField": "PositionGasMixer",
+    "targetField": "activepowerha",
 
     "database": {
       "server": "sim-01-02",
@@ -31,8 +31,8 @@
 
     "autoML": {
       "enabled": true,
-      "maxExperimentTimeInSeconds": 40,
-      "optimizingMetric": "Accuracy",
+      "maxExperimentTimeInSeconds": 26,
+      "optimizingMetric": "MicroAccuracy",
       "cacheDirectoryCleanupEnabled": true
     },
 

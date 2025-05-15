@@ -2,24 +2,30 @@
 using System.Linq;
 using System.Threading.Tasks;
 using System.Collections.Generic;
-using System.IO;
 using Microsoft.ML;
 using Microsoft.ML.Data;
 using Microsoft.ML.AutoML;
-using Microsoft.ML.Trainers;
 using D2G.Iris.ML.Core.Interfaces;
 using D2G.Iris.ML.Core.Models;
 using D2G.Iris.ML.Utils;
-using Microsoft.ML.Calibrators;
 
 namespace D2G.Iris.ML.Training
 {
     public class BinaryClassificationTrainer : BaseModelTrainer
     {
+
+        private class BinaryVector
+        {
+            [VectorType]
+            public float[] Features { get; set; }
+            public bool Label { get; set; }
+        }
+
         public BinaryClassificationTrainer(MLContext mlContext, TrainerFactory trainerFactory)
             : base(mlContext, trainerFactory)
         {
         }
+
 
         public override async Task<ITransformer> TrainModel(
             MLContext mlContext,
@@ -31,20 +37,18 @@ namespace D2G.Iris.ML.Training
             Console.WriteLine($"\nStarting binary classification using {(config.AutoML?.Enabled == true ? "AutoML" : config.TrainingParameters.Algorithm)}");
             try
             {
+
                 var labelPipeline = mlContext.Transforms.CopyColumns(
                         outputColumnName: "RawLabel", inputColumnName: config.TargetField)
                     .Append(mlContext.Transforms.Conversion.ConvertType(
                         outputColumnName: "Label", inputColumnName: "RawLabel", outputKind: DataKind.Boolean));
+
                 var labeledData = labelPipeline.Fit(dataView).Transform(dataView);
+                IDataView preparedData = PrepareData(labeledData, featureNames);
 
-                IDataView fixedData = PrepareData(labeledData, featureNames);
-
-                if (config.AutoML?.Enabled == true)
-                {
-                    return await TrainWithAdvancedAutoML(mlContext, fixedData, featureNames, config, processedData);
-                }
-
-                return await TrainWithTraditionalApproach(mlContext, fixedData, featureNames, config, processedData);
+                return config.AutoML?.Enabled == true
+                    ? await TrainWithAdvancedAutoML(mlContext, preparedData, featureNames, config, processedData)
+                    : await TrainWithTraditionalApproach(mlContext, preparedData, featureNames, config, processedData);
             }
             catch (Exception ex)
             {
@@ -57,15 +61,6 @@ namespace D2G.Iris.ML.Training
             }
         }
 
-        private string GetCleanTrainerName(string fullTrainerName)
-        {
-            if (fullTrainerName.Contains("=>"))
-            {
-                var parts = fullTrainerName.Split("=>");
-                return parts[parts.Length - 1].Trim();
-            }
-            return fullTrainerName;
-        }
 
         private async Task<ITransformer> TrainWithAdvancedAutoML(
             MLContext mlContext,
@@ -79,16 +74,17 @@ namespace D2G.Iris.ML.Training
 
             try
             {
-                string cacheDir = "AutoMLCache";
-                if (!Directory.Exists(cacheDir))
-                    Directory.CreateDirectory(cacheDir);
+        
+                CreateCacheDirectory();
 
+ 
                 if (!Enum.TryParse(config.AutoML.OptimizingMetric, out BinaryClassificationMetric metric))
                 {
                     Console.WriteLine($"Warning: Unknown OptimizingMetric '{config.AutoML.OptimizingMetric}', defaulting to {nameof(BinaryClassificationMetric.Accuracy)}");
                     metric = BinaryClassificationMetric.Accuracy;
                 }
 
+       
                 var experimentSettings = new BinaryExperimentSettings
                 {
                     MaxExperimentTimeInSeconds = (uint)config.AutoML.MaxExperimentTimeInSeconds,
@@ -99,61 +95,41 @@ namespace D2G.Iris.ML.Training
                     .CreateBinaryClassificationExperiment(experimentSettings.MaxExperimentTimeInSeconds);
 
                 var experimentStartTime = DateTime.Now;
-
                 var experimentResult = experiment.Execute(
                     trainData: preparedData,
                     labelColumnName: "Label");
-
                 var experimentDuration = DateTime.Now - experimentStartTime;
-                Console.WriteLine($"AutoML experiment completed in {experimentDuration.TotalMinutes:F1} minutes");
 
-                Console.WriteLine("\n=== AutoML Experiment Summary ===");
+     
+                Console.WriteLine($"AutoML experiment completed in {experimentDuration.TotalMinutes:F1} minutes");
+                Console.WriteLine($"\n=== AutoML Experiment Summary ===");
                 Console.WriteLine($"Models evaluated: {experimentResult.RunDetails.Count()}");
 
-                Console.WriteLine("\nTop 5 models evaluated (ranked by {0}):", metric);
-                Console.WriteLine("Rank | Model Type                | AUC      | Accuracy | F1 Score | Runtime");
-                Console.WriteLine("-----|---------------------------|----------|----------|----------|--------");
+                PrintTopModels(experimentResult.RunDetails, metric);
 
-                int rank = 1;
-                var orderedRuns = OrderRunsByMetric(experimentResult.RunDetails, metric);
-
-                foreach (var run in orderedRuns.Take(5))
-                {
-                    var cleanName = GetCleanTrainerName(run.TrainerName);
-                    Console.WriteLine($"{rank,4} | {cleanName,-24} | {run.ValidationMetrics.AreaUnderRocCurve,8:F4} | {run.ValidationMetrics.Accuracy,8:F4} | {run.ValidationMetrics.F1Score,8:F4} | {run.RuntimeInSeconds,6:F1}s");
-                    rank++;
-                }
 
                 var bestRun = experimentResult.BestRun;
-                var cleanTrainerName = GetCleanTrainerName(bestRun.TrainerName);
+                var cleanTrainerName = CleanTrainerName(bestRun.TrainerName);
                 Console.WriteLine($"\nBest model: {cleanTrainerName}");
                 Console.WriteLine($"Training time: {bestRun.RuntimeInSeconds:F1} seconds");
 
                 double bestMetricValue = GetMetricValue(bestRun.ValidationMetrics, metric);
                 Console.WriteLine($"Best {metric} value: {bestMetricValue:F4}");
 
-                var metrics = bestRun.ValidationMetrics;
-                Console.WriteLine("\nBest model validation metrics:");
-                Console.WriteLine($"  AUC:                      {metrics.AreaUnderRocCurve:F4}");
-                Console.WriteLine($"  Accuracy:                 {metrics.Accuracy:F4}");
-                Console.WriteLine($"  F1 Score:                 {metrics.F1Score:F4}");
-                Console.WriteLine($"  Positive Precision:       {metrics.PositivePrecision:F4}");
-                Console.WriteLine($"  Positive Recall:          {metrics.PositiveRecall:F4}");
-                Console.WriteLine($"  Negative Precision:       {metrics.NegativePrecision:F4}");
-                Console.WriteLine($"  Negative Recall:          {metrics.NegativeRecall:F4}");
-                Console.WriteLine($"  Area Under PRC:           {metrics.AreaUnderPrecisionRecallCurve:F4}");
+   
+                PrintBinaryClassificationMetrics(bestRun.ValidationMetrics, cleanTrainerName);
 
+    
                 await SaveModelInfo(
-                    metrics,
+                    bestRun.ValidationMetrics,
                     preparedData,
                     featureNames,
                     config,
                     processedData);
 
-                var sanitizedTrainerName = cleanTrainerName.Replace(">=>", "_").Replace(">", "")
-                    .Replace("<", "").Replace(":", "").Replace("/", "").Replace("\\", "")
-                    .Replace("*", "").Replace("?", "").Replace("\"", "").Replace("|", "");
-                var modelPath = $"BinaryClassification_AutoML_{sanitizedTrainerName}_Model.zip";
+      
+                var safeName = SanitizeFileName(cleanTrainerName);
+                var modelPath = $"BinaryClassification_AutoML_{safeName}_Model.zip";
                 mlContext.Model.Save(bestRun.Model, preparedData.Schema, modelPath);
                 Console.WriteLine($"\nModel saved to: {modelPath}");
 
@@ -172,56 +148,57 @@ namespace D2G.Iris.ML.Training
             }
         }
 
+        private void PrintTopModels(IEnumerable<RunDetail<BinaryClassificationMetrics>> runs, BinaryClassificationMetric metric)
+        {
+            Console.WriteLine($"\nTop 5 models evaluated (ranked by {metric}):");
+            Console.WriteLine("Rank | Model Type                | AUC      | Accuracy | F1 Score | Runtime");
+            Console.WriteLine("-----|---------------------------|----------|----------|----------|--------");
+
+            int rank = 1;
+            var orderedRuns = OrderRunsByMetric(runs, metric);
+
+            foreach (var run in orderedRuns.Take(5))
+            {
+                var cleanName = CleanTrainerName(run.TrainerName);
+                Console.WriteLine($"{rank,4} | {cleanName,-24} | {run.ValidationMetrics.AreaUnderRocCurve,8:F4} | " +
+                                  $"{run.ValidationMetrics.Accuracy,8:F4} | {run.ValidationMetrics.F1Score,8:F4} | " +
+                                  $"{run.RuntimeInSeconds,6:F1}s");
+                rank++;
+            }
+        }
+
         private IEnumerable<RunDetail<BinaryClassificationMetrics>> OrderRunsByMetric(
             IEnumerable<RunDetail<BinaryClassificationMetrics>> runs,
             BinaryClassificationMetric metric)
         {
-            switch (metric)
+            return metric switch
             {
-                case BinaryClassificationMetric.Accuracy:
-                    return runs.OrderByDescending(r => r.ValidationMetrics.Accuracy);
-                case BinaryClassificationMetric.AreaUnderRocCurve:
-                    return runs.OrderByDescending(r => r.ValidationMetrics.AreaUnderRocCurve);
-                case BinaryClassificationMetric.AreaUnderPrecisionRecallCurve:
-                    return runs.OrderByDescending(r => r.ValidationMetrics.AreaUnderPrecisionRecallCurve);
-                case BinaryClassificationMetric.F1Score:
-                    return runs.OrderByDescending(r => r.ValidationMetrics.F1Score);
-                case BinaryClassificationMetric.NegativePrecision:
-                    return runs.OrderByDescending(r => r.ValidationMetrics.NegativePrecision);
-                case BinaryClassificationMetric.NegativeRecall:
-                    return runs.OrderByDescending(r => r.ValidationMetrics.NegativeRecall);
-                case BinaryClassificationMetric.PositivePrecision:
-                    return runs.OrderByDescending(r => r.ValidationMetrics.PositivePrecision);
-                case BinaryClassificationMetric.PositiveRecall:
-                    return runs.OrderByDescending(r => r.ValidationMetrics.PositiveRecall);
-                default:
-                    return runs.OrderByDescending(r => r.ValidationMetrics.AreaUnderRocCurve);
-            }
+                BinaryClassificationMetric.Accuracy => runs.OrderByDescending(r => r.ValidationMetrics.Accuracy),
+                BinaryClassificationMetric.AreaUnderRocCurve => runs.OrderByDescending(r => r.ValidationMetrics.AreaUnderRocCurve),
+                BinaryClassificationMetric.AreaUnderPrecisionRecallCurve => runs.OrderByDescending(r => r.ValidationMetrics.AreaUnderPrecisionRecallCurve),
+                BinaryClassificationMetric.F1Score => runs.OrderByDescending(r => r.ValidationMetrics.F1Score),
+                BinaryClassificationMetric.NegativePrecision => runs.OrderByDescending(r => r.ValidationMetrics.NegativePrecision),
+                BinaryClassificationMetric.NegativeRecall => runs.OrderByDescending(r => r.ValidationMetrics.NegativeRecall),
+                BinaryClassificationMetric.PositivePrecision => runs.OrderByDescending(r => r.ValidationMetrics.PositivePrecision),
+                BinaryClassificationMetric.PositiveRecall => runs.OrderByDescending(r => r.ValidationMetrics.PositiveRecall),
+                _ => runs.OrderByDescending(r => r.ValidationMetrics.AreaUnderRocCurve)
+            };
         }
 
         private double GetMetricValue(BinaryClassificationMetrics metrics, BinaryClassificationMetric metric)
         {
-            switch (metric)
+            return metric switch
             {
-                case BinaryClassificationMetric.Accuracy:
-                    return metrics.Accuracy;
-                case BinaryClassificationMetric.AreaUnderRocCurve:
-                    return metrics.AreaUnderRocCurve;
-                case BinaryClassificationMetric.AreaUnderPrecisionRecallCurve:
-                    return metrics.AreaUnderPrecisionRecallCurve;
-                case BinaryClassificationMetric.F1Score:
-                    return metrics.F1Score;
-                case BinaryClassificationMetric.NegativePrecision:
-                    return metrics.NegativePrecision;
-                case BinaryClassificationMetric.NegativeRecall:
-                    return metrics.NegativeRecall;
-                case BinaryClassificationMetric.PositivePrecision:
-                    return metrics.PositivePrecision;
-                case BinaryClassificationMetric.PositiveRecall:
-                    return metrics.PositiveRecall;
-                default:
-                    return metrics.AreaUnderRocCurve;
-            }
+                BinaryClassificationMetric.Accuracy => metrics.Accuracy,
+                BinaryClassificationMetric.AreaUnderRocCurve => metrics.AreaUnderRocCurve,
+                BinaryClassificationMetric.AreaUnderPrecisionRecallCurve => metrics.AreaUnderPrecisionRecallCurve,
+                BinaryClassificationMetric.F1Score => metrics.F1Score,
+                BinaryClassificationMetric.NegativePrecision => metrics.NegativePrecision,
+                BinaryClassificationMetric.NegativeRecall => metrics.NegativeRecall,
+                BinaryClassificationMetric.PositivePrecision => metrics.PositivePrecision,
+                BinaryClassificationMetric.PositiveRecall => metrics.PositiveRecall,
+                _ => metrics.AreaUnderRocCurve
+            };
         }
 
         private async Task<ITransformer> TrainWithTraditionalApproach(
@@ -289,7 +266,11 @@ namespace D2G.Iris.ML.Training
             if (labeledData.Schema.GetColumnOrNull("Features").HasValue)
             {
                 var temp = labeledData.GetColumn<VBuffer<float>>("Features")
-                    .Zip(labeledData.GetColumn<bool>("Label"), (feat, lbl) => new BinaryVector { Features = feat.GetValues().ToArray(), Label = lbl })
+                    .Zip(labeledData.GetColumn<bool>("Label"), (feat, lbl) => new BinaryVector
+                    {
+                        Features = feat.GetValues().ToArray(),
+                        Label = lbl
+                    })
                     .ToList();
 
                 var schemaDef = SchemaDefinition.Create(typeof(BinaryVector));
@@ -304,13 +285,6 @@ namespace D2G.Iris.ML.Training
                     .Fit(labeledData)
                     .Transform(labeledData);
             }
-        }
-
-        private class BinaryVector
-        {
-            [VectorType]
-            public float[] Features { get; set; }
-            public bool Label { get; set; }
         }
     }
 }

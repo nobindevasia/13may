@@ -2,18 +2,20 @@
 using System.Linq;
 using System.Threading.Tasks;
 using System.Collections.Generic;
-using System.IO;
+using System.Reflection;
 using Microsoft.ML;
 using Microsoft.ML.Data;
 using Microsoft.ML.AutoML;
 using D2G.Iris.ML.Core.Models;
-using D2G.Iris.ML.Utils;
 using D2G.Iris.ML.Core.Interfaces;
+using D2G.Iris.ML.Utils;
 
 namespace D2G.Iris.ML.Training
 {
+
     public class RegressionTrainer : BaseModelTrainer
     {
+
         public RegressionTrainer(MLContext mlContext, TrainerFactory trainerFactory)
             : base(mlContext, trainerFactory)
         {
@@ -42,25 +44,14 @@ namespace D2G.Iris.ML.Training
                     throw new InvalidOperationException($"Target column '{config.TargetField}' not found in dataset. Available columns: {string.Join(", ", dataView.Schema.Select(c => c.Name))}");
                 }
 
-                IDataView labeledData;
-                if (!dataView.Schema.GetColumnOrNull("Label").HasValue)
-                {
-                    var labelPipeline = mlContext.Transforms.CopyColumns("Label", config.TargetField);
-                    labeledData = labelPipeline.Fit(dataView).Transform(dataView);
-                }
-                else
-                {
-                    labeledData = dataView;
-                }
 
+                IDataView labeledData = EnsureLabelColumn(mlContext, dataView, config.TargetField);
                 IDataView preparedData = PrepareData(labeledData, featureNames);
 
-                if (config.AutoML?.Enabled == true)
-                {
-                    return await TrainWithAdvancedAutoML(mlContext, preparedData, featureNames, config, processedData);
-                }
 
-                return await TrainWithTraditionalApproach(mlContext, preparedData, featureNames, config, processedData);
+                return config.AutoML?.Enabled == true
+                    ? await TrainWithAdvancedAutoML(mlContext, preparedData, featureNames, config, processedData)
+                    : await TrainWithTraditionalApproach(mlContext, preparedData, featureNames, config, processedData);
             }
             catch (Exception ex)
             {
@@ -74,41 +65,14 @@ namespace D2G.Iris.ML.Training
             }
         }
 
-        private string CleanTrainerName(string trainerName)
+        private IDataView EnsureLabelColumn(MLContext mlContext, IDataView dataView, string targetField)
         {
-            if (string.IsNullOrEmpty(trainerName))
-                return "Unknown";
-
-            if (trainerName.Contains("=>"))
+            if (!dataView.Schema.GetColumnOrNull("Label").HasValue)
             {
-                var parts = trainerName.Split("=>");
-
-                foreach (var part in parts)
-                {
-                    string trimmedPart = part.Trim();
-                    if (!string.IsNullOrEmpty(trimmedPart) &&
-                        !trimmedPart.Contains("Unknown") &&
-                        trimmedPart != "Concatenate" &&
-                        trimmedPart != "ReplaceMissingValues")
-                    {
-                        return trimmedPart;
-                    }
-                }
-
-                if (parts.Length > 0)
-                {
-                    if (parts[parts.Length - 1].Trim().Contains("Unknown") && parts.Length > 1)
-                    {
-                        return parts[parts.Length - 2].Trim();
-                    }
-                    else
-                    {
-                        return parts[parts.Length - 1].Trim();
-                    }
-                }
+                var labelPipeline = mlContext.Transforms.CopyColumns("Label", targetField);
+                return labelPipeline.Fit(dataView).Transform(dataView);
             }
-
-            return string.IsNullOrEmpty(trainerName) ? "Unknown" : trainerName;
+            return dataView;
         }
 
         private async Task<ITransformer> TrainWithAdvancedAutoML(
@@ -123,11 +87,7 @@ namespace D2G.Iris.ML.Training
 
             try
             {
-                string cacheDir = "AutoMLCache";
-                if (!Directory.Exists(cacheDir))
-                {
-                    Directory.CreateDirectory(cacheDir);
-                }
+                CreateCacheDirectory();
 
                 if (!Enum.TryParse(config.AutoML.OptimizingMetric, out RegressionMetric metric))
                 {
@@ -135,57 +95,30 @@ namespace D2G.Iris.ML.Training
                     metric = RegressionMetric.RSquared;
                 }
 
+
                 var experimentSettings = new RegressionExperimentSettings
                 {
                     MaxExperimentTimeInSeconds = (uint)config.AutoML.MaxExperimentTimeInSeconds,
                     OptimizingMetric = metric
                 };
 
-                try
-                {
-                    if (config.AutoML.MaxModels > 0)
-                    {
-                        var prop = experimentSettings.GetType().GetProperty("MaxModels");
-                        prop?.SetValue(experimentSettings, (uint)config.AutoML.MaxModels);
-                        Console.WriteLine($"Set MaxModels to {config.AutoML.MaxModels}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Note: Could not set MaxModels: {ex.Message}");
-                }
+                TrySetMaxModels(config, experimentSettings);
 
                 Console.WriteLine("Creating experiment...");
                 var experiment = mlContext.Auto().CreateRegressionExperiment(experimentSettings);
 
                 Console.WriteLine("Starting AutoML experiment - this may take a while...");
                 var experimentStartTime = DateTime.Now;
-
                 var experimentResult = experiment.Execute(
                     trainData: preparedData,
                     labelColumnName: "Label");
-
                 var experimentDuration = DateTime.Now - experimentStartTime;
-                Console.WriteLine($"AutoML experiment completed in {experimentDuration.TotalMinutes:F1} minutes");
 
+                Console.WriteLine($"AutoML experiment completed in {experimentDuration.TotalMinutes:F1} minutes");
                 Console.WriteLine("\n=== AutoML Experiment Summary ===");
                 Console.WriteLine($"Models evaluated: {experimentResult.RunDetails.Count()}");
 
-                Console.WriteLine($"\nTop 5 models evaluated (ranked by {metric}):");
-                Console.WriteLine("Rank | Model Type                | R²      | MAE      | RMSE     | Runtime");
-                Console.WriteLine("-----|---------------------------|---------|----------|----------|--------");
-
-                int rank = 1;
-                var orderedRuns = OrderRunsByMetric(experimentResult.RunDetails.Where(r => r.ValidationMetrics != null), metric);
-
-                foreach (var run in orderedRuns.Take(5))
-                {
-                    string trainerName = CleanTrainerName(run.TrainerName);
-
-
-                    Console.WriteLine($"{rank,4} | {trainerName,-24} | {run.ValidationMetrics.RSquared,7:F4} | {run.ValidationMetrics.MeanAbsoluteError,8:F4} | {run.ValidationMetrics.RootMeanSquaredError,8:F4} | {run.RuntimeInSeconds,6:F1}s");
-                    rank++;
-                }
+                PrintTopModels(experimentResult.RunDetails.Where(r => r.ValidationMetrics != null), metric);
 
                 var bestRun = experimentResult.BestRun;
                 string bestTrainerName = CleanTrainerName(bestRun.TrainerName);
@@ -196,28 +129,16 @@ namespace D2G.Iris.ML.Training
                 double bestMetricValue = GetMetricValue(bestRun.ValidationMetrics, metric);
                 Console.WriteLine($"Best {metric} value: {bestMetricValue:F4}");
 
-                Console.WriteLine("\nBest model validation metrics:");
-                var metrics = bestRun.ValidationMetrics;
-                Console.WriteLine($"  R²:                         {metrics.RSquared:F4}");
-                Console.WriteLine($"  Mean Absolute Error:        {metrics.MeanAbsoluteError:F4}");
-                Console.WriteLine($"  Mean Squared Error:         {metrics.MeanSquaredError:F4}");
-                Console.WriteLine($"  Root Mean Squared Error:    {metrics.RootMeanSquaredError:F4}");
+                PrintRegressionMetrics(bestRun.ValidationMetrics, bestTrainerName);
 
                 await SaveModelInfo(
-                    metrics,
+                    bestRun.ValidationMetrics,
                     preparedData,
                     featureNames,
                     config,
                     processedData);
 
-                var safeName = bestTrainerName;
-
-                safeName = string.Concat(safeName.Split(Path.GetInvalidFileNameChars()));
-                safeName = safeName.Replace("=>", "_").Replace(">", "_").Replace("<", "_");
-
-                if (string.IsNullOrWhiteSpace(safeName) || safeName.Trim() == "Unknown")
-                    safeName = "RegressionModel";
-
+                var safeName = SanitizeFileName(bestTrainerName, "RegressionModel");
                 var modelPath = $"Regression_AutoML_{safeName}_Model.zip";
                 mlContext.Model.Save(bestRun.Model, preparedData.Schema, modelPath);
                 Console.WriteLine($"\nModel saved to: {modelPath}");
@@ -237,40 +158,68 @@ namespace D2G.Iris.ML.Training
             }
         }
 
+        private void TrySetMaxModels(ModelConfig config, RegressionExperimentSettings experimentSettings)
+        {
+            try
+            {
+                if (config.AutoML.MaxModels > 0)
+                {
+                    PropertyInfo prop = experimentSettings.GetType().GetProperty("MaxModels");
+                    prop?.SetValue(experimentSettings, (uint)config.AutoML.MaxModels);
+                    Console.WriteLine($"Set MaxModels to {config.AutoML.MaxModels}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Note: Could not set MaxModels: {ex.Message}");
+            }
+        }
+
+        private void PrintTopModels(IEnumerable<RunDetail<RegressionMetrics>> runs, RegressionMetric metric)
+        {
+            Console.WriteLine($"\nTop 5 models evaluated (ranked by {metric}):");
+            Console.WriteLine("Rank | Model Type                | R²      | MAE      | RMSE     | Runtime");
+            Console.WriteLine("-----|---------------------------|---------|----------|----------|--------");
+
+            int rank = 1;
+            var orderedRuns = OrderRunsByMetric(runs, metric);
+
+            foreach (var run in orderedRuns.Take(5))
+            {
+                string trainerName = CleanTrainerName(run.TrainerName);
+                Console.WriteLine($"{rank,4} | {trainerName,-24} | " +
+                                 $"{run.ValidationMetrics.RSquared,7:F4} | " +
+                                 $"{run.ValidationMetrics.MeanAbsoluteError,8:F4} | " +
+                                 $"{run.ValidationMetrics.RootMeanSquaredError,8:F4} | " +
+                                 $"{run.RuntimeInSeconds,6:F1}s");
+                rank++;
+            }
+        }
+
         private IEnumerable<RunDetail<RegressionMetrics>> OrderRunsByMetric(
             IEnumerable<RunDetail<RegressionMetrics>> runs,
             RegressionMetric metric)
         {
-            switch (metric)
+            return metric switch
             {
-                case RegressionMetric.MeanAbsoluteError:
-                    return runs.OrderBy(r => r.ValidationMetrics.MeanAbsoluteError);
-                case RegressionMetric.MeanSquaredError:
-                    return runs.OrderBy(r => r.ValidationMetrics.MeanSquaredError);
-                case RegressionMetric.RootMeanSquaredError:
-                    return runs.OrderBy(r => r.ValidationMetrics.RootMeanSquaredError);
-                case RegressionMetric.RSquared:           
-                    return runs.OrderByDescending(r => r.ValidationMetrics.RSquared);
-                default:
-                    return runs.OrderByDescending(r => r.ValidationMetrics.RSquared);
-            }
+                RegressionMetric.MeanAbsoluteError => runs.OrderBy(r => r.ValidationMetrics.MeanAbsoluteError),
+                RegressionMetric.MeanSquaredError => runs.OrderBy(r => r.ValidationMetrics.MeanSquaredError),
+                RegressionMetric.RootMeanSquaredError => runs.OrderBy(r => r.ValidationMetrics.RootMeanSquaredError),
+                RegressionMetric.RSquared => runs.OrderByDescending(r => r.ValidationMetrics.RSquared),
+                _ => runs.OrderByDescending(r => r.ValidationMetrics.RSquared)
+            };
         }
 
         private double GetMetricValue(RegressionMetrics metrics, RegressionMetric metric)
         {
-            switch (metric)
+            return metric switch
             {
-                case RegressionMetric.MeanAbsoluteError:
-                    return metrics.MeanAbsoluteError;
-                case RegressionMetric.MeanSquaredError:
-                    return metrics.MeanSquaredError;
-                case RegressionMetric.RootMeanSquaredError:
-                    return metrics.RootMeanSquaredError;
-                case RegressionMetric.RSquared:
-                    return metrics.RSquared;
-                default:
-                    return metrics.RSquared;
-            }
+                RegressionMetric.MeanAbsoluteError => metrics.MeanAbsoluteError,
+                RegressionMetric.MeanSquaredError => metrics.MeanSquaredError,
+                RegressionMetric.RootMeanSquaredError => metrics.RootMeanSquaredError,
+                RegressionMetric.RSquared => metrics.RSquared,
+                _ => metrics.RSquared
+            };
         }
 
         private async Task<ITransformer> TrainWithTraditionalApproach(
@@ -281,7 +230,6 @@ namespace D2G.Iris.ML.Training
             ProcessedData processedData)
         {
             Console.WriteLine($"Using traditional approach with {config.TrainingParameters.Algorithm}");
-
             var split = SplitTrainTestData(
                 _mlContext,
                 preparedData,
@@ -294,7 +242,10 @@ namespace D2G.Iris.ML.Training
             var pipeline = GetBasePipeline(_mlContext)
                 .Append(trainer);
 
+            var trainingStartTime = DateTime.Now;
             var model = await TrainModelAsync(pipeline, split.TrainSet);
+            var trainingDuration = DateTime.Now - trainingStartTime;
+            Console.WriteLine($"Training completed in {trainingDuration.TotalSeconds:F1} seconds");
 
             var metrics = EvaluateRegression(
                 _mlContext,
@@ -349,6 +300,5 @@ namespace D2G.Iris.ML.Training
                 throw;
             }
         }
-
     }
 }
