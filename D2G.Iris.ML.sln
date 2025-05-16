@@ -1,9 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.12.35728.132 d17.12
+VisualStudioVersion = 17.12.35728.132
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "D2G.Iris.ML", "D2G.Iris.ML\D2G.Iris.ML.csproj", "{35573846-E589-400D-A98C-806A12E2B302}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "D2G.Iris.ML.ConfigUI", "D2G.Iris.ML.ConfigUI\D2G.Iris.ML.ConfigUI.csproj", "{507ADE1A-B5BB-49F0-89D0-7061E304D734}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,6 +17,10 @@ Global
 		{35573846-E589-400D-A98C-806A12E2B302}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{35573846-E589-400D-A98C-806A12E2B302}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{35573846-E589-400D-A98C-806A12E2B302}.Release|Any CPU.Build.0 = Release|Any CPU
+		{507ADE1A-B5BB-49F0-89D0-7061E304D734}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{507ADE1A-B5BB-49F0-89D0-7061E304D734}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{507ADE1A-B5BB-49F0-89D0-7061E304D734}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{507ADE1A-B5BB-49F0-89D0-7061E304D734}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
